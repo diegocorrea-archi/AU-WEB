@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-line;
+  }
+  body {
+    @apply bg-paper text-ink;
+  }
+  ::selection {
+    background-color: #E9D3A6;
+  }
+}
+
+@layer components {
+  .brand-stripe {
+    @apply h-1.5 w-full rounded-full overflow-hidden flex;
+  }
+  .kpi-value {
+    font-family: 'IBM Plex Mono', monospace;
+    letter-spacing: -0.02em;
+  }
+  .section-title {
+    font-family: 'Fraunces', serif;
+  }
+}
+
+:focus-visible {
+  outline: 2px solid #B9862F;
+  outline-offset: 2px;
+}
