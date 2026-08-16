@@ -2,6 +2,8 @@
 // Todas las funciones de este módulo reciben el `dataset` normalizado como
 // parámetro (en vez de importarlo fijo) para poder alimentarlo desde el
 // Google Sheet real o desde la muestra local, sin duplicar lógica.
+import { mondayOf } from './normalize'
+
 function uniqueSorted(values) {
   return [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b))
 }
@@ -46,10 +48,10 @@ function inRange(fecha, ini, fin) {
 function matches(
   row,
   filters,
-  { hasBrand = true, hasProducto = true, hasCanal = true, hasConcepto = true } = {}
+  { hasBrand = true, hasProducto = true, hasCanal = true, hasConcepto = true, hasPlaza = true, hasCiudad = true } = {}
 ) {
-  if (filters.plaza && row.plaza !== filters.plaza) return false
-  if (filters.ciudad && row.ciudad !== filters.ciudad) return false
+  if (hasPlaza && filters.plaza && row.plaza !== filters.plaza) return false
+  if (hasCiudad && filters.ciudad && row.ciudad !== filters.ciudad) return false
   if (hasBrand && filters.brand && row.brand !== filters.brand) return false
   if (hasProducto && filters.producto && row.producto !== filters.producto) return false
   if (hasCanal && filters.canal && row.canal !== filters.canal) return false
@@ -69,6 +71,7 @@ export const emptyDataset = {
   universoOn: [],
   universoOff: [],
   planeacion: [],
+  clientesDirectos: [],
 }
 
 export function applyFilters(dataset, filters) {
@@ -83,6 +86,25 @@ export function applyFilters(dataset, filters) {
   const SELL_OUT_CONCEPTOS_VALIDOS = ['VENTA', 'BONIFICACIONES']
   const sellOut = sellOutBase.filter((r) => SELL_OUT_CONCEPTOS_VALIDOS.includes(r.concepto))
 
+  // Regla de negocio: solo hay dos embajadores OFF-trade válidos. Cualquier
+  // otro valor en esa columna es error de captura y se descarta.
+  const EMBAJADORES_OFF_VALIDOS = ['ROCIO SANCHEZ', 'ALFREDO GONZALEZ']
+  const actividadesOff = dataset.actividadesOff.filter(
+    (r) =>
+      EMBAJADORES_OFF_VALIDOS.includes(String(r.embajador || '').trim().toUpperCase()) &&
+      // ACTIVIDADES_OFF no tiene columnas de Plaza/Ciudad — esos filtros
+      // globales no le aplican (antes se forzaban a '' y eso las excluía
+      // por completo en cuanto alguien filtraba por Plaza o Ciudad).
+      matches(r, filters, {
+        hasBrand: false,
+        hasProducto: false,
+        hasCanal: false,
+        hasConcepto: false,
+        hasPlaza: false,
+        hasCiudad: false,
+      })
+  )
+
   return {
     ventas,
     ventasReales,
@@ -90,27 +112,32 @@ export function applyFilters(dataset, filters) {
     actividadesOn: dataset.actividadesOn.filter((r) =>
       matches(r, filters, { hasBrand: false, hasProducto: false, hasCanal: false, hasConcepto: false })
     ),
-    actividadesOff: dataset.actividadesOff.filter((r) =>
-      matches({ ...r, plaza: '', ciudad: '' }, filters, {
-        hasBrand: false,
-        hasProducto: false,
-        hasCanal: false,
-        hasConcepto: false,
-      })
-    ),
+    actividadesOff,
+    // Regla de negocio: en los 3 universos de cuentas solo cuentan las
+    // que tienen STATUS = ACTIVO (columna B en las tres hojas).
     universoOn: dataset.universoOn.filter(
       (r) =>
+        r.status === 'ACTIVO' &&
         (!filters.plaza || r.plaza === filters.plaza) &&
         (!filters.ciudad || r.ciudad === filters.ciudad) &&
-        (!filters.brand || r.brand === filters.brand)
+        (!filters.brand || r.brand === filters.brand) &&
+        (!filters.embajador || r.operador === filters.embajador)
     ),
     universoOff: dataset.universoOff.filter(
       (r) =>
+        r.status === 'ACTIVO' &&
         (!filters.plaza || r.plaza === filters.plaza) &&
         (!filters.ciudad || r.ciudad === filters.ciudad) &&
-        (!filters.brand || r.brand === filters.brand)
+        (!filters.brand || r.brand === filters.brand) &&
+        (!filters.embajador || r.operador === filters.embajador)
     ),
     planeacion: dataset.planeacion.filter((r) => !filters.embajador || r.embajador === filters.embajador),
+    clientesDirectos: dataset.clientesDirectos.filter(
+      (r) =>
+        r.status === 'ACTIVO' &&
+        (!filters.plaza || r.plaza === filters.plaza) &&
+        (!filters.embajador || r.embajador === filters.embajador)
+    ),
   }
 }
 
@@ -150,13 +177,15 @@ export function computeExecutiveKpis(filtered) {
   // Cumplimiento de planeación: cuentas planeadas por embajador que
   // efectivamente registran una actividad ON con ese mismo cliente.
   const clientesVisitadosPorEmbajador = new Map()
-  filtered.actividadesOn.forEach((a) => {
-    if (!a.embajador) return
-    if (!clientesVisitadosPorEmbajador.has(a.embajador)) {
-      clientesVisitadosPorEmbajador.set(a.embajador, new Set())
-    }
-    if (a.cliente) clientesVisitadosPorEmbajador.get(a.embajador).add(a.cliente.toUpperCase())
-  })
+  ;[...filtered.actividadesOn, ...filtered.actividadesOff]
+    .filter((a) => a.esVisitaMantenimiento)
+    .forEach((a) => {
+      if (!a.embajador) return
+      if (!clientesVisitadosPorEmbajador.has(a.embajador)) {
+        clientesVisitadosPorEmbajador.set(a.embajador, new Set())
+      }
+      if (a.cliente) clientesVisitadosPorEmbajador.get(a.embajador).add(a.cliente.toUpperCase())
+    })
   let planeadas = 0
   let ejecutadas = 0
   filtered.planeacion.forEach((p) => {
@@ -470,4 +499,535 @@ export function rankEmbajadoresSellOut(filtered, limit = 12) {
     }))
     .sort((a, b) => b.unidades - a.unidades)
     .slice(0, limit)
+}
+
+// --- Dashboard Planeación ---------------------------------------------------
+// Compara lo que cada embajador PLANEÓ visitar esa semana (hoja PLANEACION)
+// contra lo que realmente registró en ACTIVIDADES_ON esa misma semana.
+// La "semana" siempre se agrupa por su lunes (YYYY-MM-DD) para que ambas
+// hojas se puedan cruzar aunque el día exacto de registro varíe.
+
+const DIAS_ORDEN = ['lunes', 'martes', 'miercoles', 'jueves', 'viernes']
+const DIA_SEMANA_NOMBRE = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado']
+
+function diaSemana(iso) {
+  if (!iso) return null
+  const d = new Date(`${iso}T00:00:00Z`)
+  return DIA_SEMANA_NOMBRE[d.getUTCDay()]
+}
+
+export function getCurrentWeek() {
+  return mondayOf(new Date().toISOString().slice(0, 10))
+}
+
+export function getAvailableWeeks(filtered) {
+  const weeks = new Set()
+  filtered.planeacion.forEach((p) => p.semana && weeks.add(p.semana))
+  filtered.actividadesOn.forEach((a) => a.semana && weeks.add(a.semana))
+  filtered.actividadesOff.forEach((a) => a.semana && weeks.add(a.semana))
+  weeks.add(getCurrentWeek())
+  return [...weeks].sort()
+}
+
+const DIA_MS = 86400000
+export function formatWeekLabel(monday) {
+  if (!monday) return ''
+  const start = new Date(`${monday}T00:00:00Z`)
+  const end = new Date(start.getTime() + 4 * DIA_MS)
+  const fmt = (d) => d.toLocaleDateString('es-MX', { day: 'numeric', month: 'short', timeZone: 'UTC' })
+  return `${fmt(start)} – ${fmt(end)}`
+}
+
+// Agrega planeación + ejecución por embajador para UNA semana (monday ISO).
+// Solo cuenta como "visita" una fila de ACTIVIDADES_ON/ACTIVIDADES_OFF con
+// ¿QUÉ ACTIVIDAD VAS A REALIZAR? = VISITA DE MANTENIMIENTO. Se combinan
+// ambas hojas porque los dos embajadores OFF (Rocío Sánchez, Alfredo
+// González) registran su ejecución en ACTIVIDADES_OFF, no en ON.
+export function computePlaneacionSemana(filtered, semana) {
+  const planeacionSemana = filtered.planeacion.filter((p) => p.semana === semana)
+  const actividadesSemana = [...filtered.actividadesOn, ...filtered.actividadesOff].filter(
+    (a) => a.semana === semana && a.esVisitaMantenimiento
+  )
+
+  const porEmbajador = new Map()
+  const ensure = (embajador) => {
+    if (!porEmbajador.has(embajador)) {
+      porEmbajador.set(embajador, {
+        embajador,
+        planeadas: new Set(),
+        visitadas: new Set(),
+        union: 0,
+        primo: 0,
+      })
+    }
+    return porEmbajador.get(embajador)
+  }
+
+  planeacionSemana.forEach((p) => {
+    if (!p.embajador) return
+    const e = ensure(p.embajador)
+    DIAS_ORDEN.forEach((dia) => p.porDia[dia].forEach((cuenta) => e.planeadas.add(cuenta)))
+  })
+
+  actividadesSemana.forEach((a) => {
+    if (!a.embajador) return
+    const e = ensure(a.embajador)
+    if (a.cliente) e.visitadas.add(a.cliente)
+    if (a.visitaUnion) e.union += 1
+    if (a.visitaPrimo) e.primo += 1
+  })
+
+  const filas = [...porEmbajador.values()]
+    .map((e) => {
+      const pendientes = [...e.planeadas].filter((c) => !e.visitadas.has(c))
+      const cumplidas = [...e.planeadas].filter((c) => e.visitadas.has(c))
+      const extras = [...e.visitadas].filter((c) => !e.planeadas.has(c))
+      return {
+        embajador: e.embajador,
+        planeadas: e.planeadas.size,
+        visitadasDelPlan: cumplidas.length,
+        cumplimiento: e.planeadas.size ? cumplidas.length / e.planeadas.size : 0,
+        pendientes,
+        extras,
+        union: e.union,
+        primo: e.primo,
+      }
+    })
+    .sort((a, b) => b.planeadas - a.planeadas)
+
+  const totalPlaneadas = sum(filas, (f) => f.planeadas)
+  const totalVisitadas = sum(filas, (f) => f.visitadasDelPlan)
+
+  return {
+    semana,
+    filas,
+    totalPlaneadas,
+    totalVisitadas,
+    cumplimiento: totalPlaneadas ? totalVisitadas / totalPlaneadas : 0,
+  }
+}
+
+// Planeadas vs visitadas por día (lunes..viernes) para una semana, para la
+// gráfica de barras del calendario semanal.
+export function computeDiaBreakdown(filtered, semana) {
+  const planeacionSemana = filtered.planeacion.filter((p) => p.semana === semana)
+  const actividadesSemana = [...filtered.actividadesOn, ...filtered.actividadesOff].filter(
+    (a) => a.semana === semana && a.esVisitaMantenimiento
+  )
+
+  const planPorDia = Object.fromEntries(DIAS_ORDEN.map((d) => [d, new Set()]))
+  planeacionSemana.forEach((p) => {
+    DIAS_ORDEN.forEach((dia) => p.porDia[dia].forEach((cuenta) => planPorDia[dia].add(`${p.embajador}|${cuenta}`)))
+  })
+
+  const visitPorDia = Object.fromEntries(DIAS_ORDEN.map((d) => [d, new Set()]))
+  actividadesSemana.forEach((a) => {
+    const dia = diaSemana(a.fecha)
+    if (DIAS_ORDEN.includes(dia) && a.cliente) {
+      visitPorDia[dia].add(`${a.embajador}|${a.cliente}`)
+    }
+  })
+
+  const NOMBRE = { lunes: 'Lun', martes: 'Mar', miercoles: 'Mié', jueves: 'Jue', viernes: 'Vie' }
+  return DIAS_ORDEN.map((d) => ({
+    name: NOMBRE[d],
+    planeadas: planPorDia[d].size,
+    visitadas: visitPorDia[d].size,
+  }))
+}
+
+// Serie histórica de cumplimiento % (última N semanas con datos).
+export function computeCumplimientoTrend(filtered, weeks, limit = 10) {
+  const ultimas = weeks.slice(-limit)
+  return ultimas.map((w) => {
+    const { cumplimiento, totalPlaneadas, totalVisitadas } = computePlaneacionSemana(filtered, w)
+    return {
+      name: formatWeekLabel(w),
+      semana: w,
+      cumplimiento,
+      planeadas: totalPlaneadas,
+      visitadas: totalVisitadas,
+    }
+  })
+}
+
+// --- Dashboard Clientes -----------------------------------------------------
+// Unifica los tres universos de cuentas (venta directa, ON, OFF) por
+// nombre de cuenta y cruza cada una contra VENTAS + ACTIVIDADES_ON/OFF para
+// traer sus métricas mes a mes.
+
+const MES_LARGO = [
+  '',
+  'Enero',
+  'Febrero',
+  'Marzo',
+  'Abril',
+  'Mayo',
+  'Junio',
+  'Julio',
+  'Agosto',
+  'Septiembre',
+  'Octubre',
+  'Noviembre',
+  'Diciembre',
+]
+
+function mesDeFecha(iso) {
+  return iso ? iso.slice(0, 7) : null
+}
+
+export function getCurrentMonth() {
+  return new Date().toISOString().slice(0, 7)
+}
+
+export function formatMonthLabel(ym) {
+  if (!ym) return ''
+  const [y, m] = ym.split('-')
+  return `${MES_LARGO[Number(m)]} ${y}`
+}
+
+export function getAvailableMonths(filtered) {
+  const months = new Set()
+  filtered.ventasReales.forEach((r) => r.fecha && months.add(mesDeFecha(r.fecha)))
+  filtered.actividadesOn.forEach((r) => r.fecha && months.add(mesDeFecha(r.fecha)))
+  filtered.actividadesOff.forEach((r) => r.fecha && months.add(mesDeFecha(r.fecha)))
+  months.add(getCurrentMonth())
+  return [...months].sort()
+}
+
+const TIPO_ACTIVIDAD_CAMPO = {
+  'VISITA DE MANTENIMIENTO': 'visitasMantenimiento',
+  CAPACITACIÓN: 'capacitaciones',
+  ACTIVACIÓN: 'activaciones',
+  'MEJORA DE ANAQUEL': 'mejoraAnaquel',
+  'EXHIBICIÓN ADICIONAL': 'exhibicion',
+}
+
+function nuevaCuenta(cliente) {
+  return {
+    cliente,
+    universos: new Set(),
+    embajador: '',
+    plaza: '',
+    ciudad: '',
+    ventas: 0,
+    botellas: 0,
+    visitasMantenimiento: 0,
+    capacitaciones: 0,
+    activaciones: 0,
+    mejoraAnaquel: 0,
+    exhibicion: 0,
+  }
+}
+
+// Cuenta por cuenta: universo(s) a los que pertenece, embajador dueño,
+// plaza/ciudad, y sus métricas del mes seleccionado.
+export function computeClientesUniverso(filtered, mes) {
+  const cuentas = new Map()
+  const ensure = (cliente) => {
+    if (!cliente) return null
+    if (!cuentas.has(cliente)) cuentas.set(cliente, nuevaCuenta(cliente))
+    return cuentas.get(cliente)
+  }
+
+  filtered.clientesDirectos.forEach((r) => {
+    const c = ensure(r.cliente)
+    if (!c) return
+    c.universos.add('Directo')
+    if (!c.embajador) c.embajador = r.embajador
+    if (!c.plaza) c.plaza = r.plaza
+  })
+
+  filtered.universoOn.forEach((r) => {
+    const c = ensure(r.cuenta)
+    if (!c) return
+    c.universos.add('ON')
+    if (!c.embajador) c.embajador = r.operador
+    if (!c.plaza) c.plaza = r.plaza
+    if (!c.ciudad) c.ciudad = r.ciudad
+  })
+
+  filtered.universoOff.forEach((r) => {
+    const c = ensure(r.cuenta)
+    if (!c) return
+    c.universos.add('OFF')
+    if (!c.embajador) c.embajador = r.operador
+    if (!c.plaza) c.plaza = r.plaza
+    if (!c.ciudad) c.ciudad = r.ciudad
+  })
+
+  // Métricas del mes seleccionado. Botellas viene de VENTAS (venta directa)
+  // + SELL_OUT (cuentas ON, que no tienen $ pero sí volumen movido).
+  filtered.ventasReales
+    .filter((r) => mesDeFecha(r.fecha) === mes)
+    .forEach((r) => {
+      const c = ensure(r.cliente)
+      if (c) {
+        c.ventas += r.monto
+        c.botellas += r.cantidad
+      }
+    })
+  filtered.sellOut
+    .filter((r) => mesDeFecha(r.fecha) === mes)
+    .forEach((r) => {
+      const c = ensure(r.cliente)
+      if (c) c.botellas += r.cantidad
+    })
+  ;[...filtered.actividadesOn, ...filtered.actividadesOff]
+    .filter((a) => mesDeFecha(a.fecha) === mes)
+    .forEach((a) => {
+      const c = ensure(a.cliente)
+      if (!c) return
+      const campo = TIPO_ACTIVIDAD_CAMPO[a.tipoActividad]
+      if (campo) c[campo] += 1
+    })
+
+  return [...cuentas.values()]
+    .map((c) => ({
+      ...c,
+      universos: [...c.universos],
+      universoLabel: c.universos.size ? [...c.universos].join(' + ') : 'Sin universo asignado',
+    }))
+    .sort((a, b) => {
+      if (b.ventas !== a.ventas) return b.ventas - a.ventas
+      if (b.botellas !== a.botellas) return b.botellas - a.botellas
+      const actA = a.visitasMantenimiento + a.capacitaciones + a.activaciones + a.mejoraAnaquel + a.exhibicion
+      const actB = b.visitasMantenimiento + b.capacitaciones + b.activaciones + b.mejoraAnaquel + b.exhibicion
+      return actB - actA
+    })
+}
+
+export function computeClientesKpis(filtered, mes) {
+  const universoDirecto = distinct(filtered.clientesDirectos, (r) => r.cliente)
+  const universoOnCount = distinct(filtered.universoOn, (r) => r.cuenta)
+  const universoOffCount = distinct(filtered.universoOff, (r) => r.cuenta)
+  const universoTotal = new Set([
+    ...filtered.clientesDirectos.map((r) => r.cliente),
+    ...filtered.universoOn.map((r) => r.cuenta),
+    ...filtered.universoOff.map((r) => r.cuenta),
+  ]).size
+
+  const actividadesMes = [...filtered.actividadesOn, ...filtered.actividadesOff].filter(
+    (a) => mesDeFecha(a.fecha) === mes
+  )
+  const ventasMes = sum(
+    filtered.ventasReales.filter((r) => mesDeFecha(r.fecha) === mes),
+    (r) => r.monto
+  )
+  const botellasMes =
+    sum(
+      filtered.ventasReales.filter((r) => mesDeFecha(r.fecha) === mes),
+      (r) => r.cantidad
+    ) +
+    sum(
+      filtered.sellOut.filter((r) => mesDeFecha(r.fecha) === mes),
+      (r) => r.cantidad
+    )
+
+  return {
+    universoTotal,
+    universoDirecto,
+    universoOnCount,
+    universoOffCount,
+    ventasMes,
+    botellasMes,
+    visitasMantenimiento: actividadesMes.filter((a) => a.tipoActividad === 'VISITA DE MANTENIMIENTO').length,
+    capacitaciones: actividadesMes.filter((a) => a.tipoActividad === 'CAPACITACIÓN').length,
+    activaciones: actividadesMes.filter((a) => a.tipoActividad === 'ACTIVACIÓN').length,
+  }
+}
+
+// Tendencia mensual agregada (últimos N meses con datos).
+export function computeClientesTrend(filtered, months, limit = 12) {
+  const ultimos = months.slice(-limit)
+  return ultimos.map((mes) => {
+    const actividadesMes = [...filtered.actividadesOn, ...filtered.actividadesOff].filter(
+      (a) => mesDeFecha(a.fecha) === mes
+    )
+    return {
+      name: formatMonthLabel(mes),
+      mes,
+      ventas: sum(
+        filtered.ventasReales.filter((r) => mesDeFecha(r.fecha) === mes),
+        (r) => r.monto
+      ),
+      visitas: actividadesMes.filter((a) => a.tipoActividad === 'VISITA DE MANTENIMIENTO').length,
+      capacitaciones: actividadesMes.filter((a) => a.tipoActividad === 'CAPACITACIÓN').length,
+      activaciones: actividadesMes.filter((a) => a.tipoActividad === 'ACTIVACIÓN').length,
+    }
+  })
+}
+
+export function computeCuentasPorPlaza(filtered) {
+  const map = new Map()
+  ;[...filtered.clientesDirectos, ...filtered.universoOn, ...filtered.universoOff].forEach((r) => {
+    const plaza = r.plaza
+    if (!plaza) return
+    map.set(plaza, (map.get(plaza) || 0) + 1)
+  })
+  return [...map.entries()].map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value)
+}
+
+// --- Dashboard Embajadores ---------------------------------------------------
+// Vista 360° de cada embajador: venta directa, botellas (venta + sell out),
+// actividad de campo (visitas/capacitaciones/activaciones, + anaquel y
+// exhibición para los OFF), personas impactadas y sus mejores 3 cuentas.
+
+export function computeEmbajadoresOverview(filtered) {
+  const map = new Map()
+  const ensure = (embajador) => {
+    if (!embajador) return null
+    if (!map.has(embajador)) {
+      map.set(embajador, {
+        embajador,
+        venta: 0,
+        botellas: 0,
+        clientes: new Set(),
+        marcaVenta: { Unión: 0, Primo: 0, Otro: 0 },
+        visitasMantenimiento: 0,
+        capacitaciones: 0,
+        activaciones: 0,
+        mejoraAnaquel: 0,
+        exhibicion: 0,
+        personasImpactadas: 0,
+        cuentas: new Map(),
+      })
+    }
+    return map.get(embajador)
+  }
+
+  const ensureCuenta = (e, cliente) => {
+    if (!e || !cliente) return null
+    if (!e.cuentas.has(cliente)) e.cuentas.set(cliente, { cliente, ventas: 0, botellas: 0, actividad: 0 })
+    return e.cuentas.get(cliente)
+  }
+
+  filtered.ventasReales.forEach((r) => {
+    const e = ensure(r.embajador)
+    if (!e) return
+    e.venta += r.monto
+    e.botellas += r.cantidad
+    if (r.cliente) e.clientes.add(r.cliente)
+    e.marcaVenta[r.brand] = (e.marcaVenta[r.brand] || 0) + r.monto
+    const c = ensureCuenta(e, r.cliente)
+    if (c) {
+      c.ventas += r.monto
+      c.botellas += r.cantidad
+    }
+  })
+
+  filtered.sellOut.forEach((r) => {
+    const e = ensure(r.embajador)
+    if (!e) return
+    e.botellas += r.cantidad
+    if (r.cliente) e.clientes.add(r.cliente)
+    const c = ensureCuenta(e, r.cliente)
+    if (c) c.botellas += r.cantidad
+  })
+  ;[...filtered.actividadesOn, ...filtered.actividadesOff].forEach((a) => {
+    const e = ensure(a.embajador)
+    if (!e) return
+    if (a.cliente) e.clientes.add(a.cliente)
+    e.personasImpactadas += a.personasImpactadas || 0
+    const campo = TIPO_ACTIVIDAD_CAMPO[a.tipoActividad]
+    if (campo) {
+      e[campo] += 1
+      const c = ensureCuenta(e, a.cliente)
+      if (c) c.actividad += 1
+    }
+  })
+
+  return [...map.values()]
+    .map((e) => {
+      const top3 = [...e.cuentas.values()]
+        .sort((a, b) => b.ventas - a.ventas || b.botellas - a.botellas || b.actividad - a.actividad)
+        .slice(0, 3)
+      return {
+        embajador: e.embajador,
+        venta: e.venta,
+        botellas: e.botellas,
+        clientes: e.clientes.size,
+        primoPct: e.venta ? (e.marcaVenta.Primo || 0) / e.venta : 0,
+        visitasMantenimiento: e.visitasMantenimiento,
+        capacitaciones: e.capacitaciones,
+        activaciones: e.activaciones,
+        mejoraAnaquel: e.mejoraAnaquel,
+        exhibicion: e.exhibicion,
+        personasImpactadas: e.personasImpactadas,
+        top3,
+      }
+    })
+    .sort((a, b) => {
+      if (b.venta !== a.venta) return b.venta - a.venta
+      const actA = a.visitasMantenimiento + a.capacitaciones + a.activaciones
+      const actB = b.visitasMantenimiento + b.capacitaciones + b.activaciones
+      return actB - actA
+    })
+}
+
+export function computeEmbajadoresKpis(overview, filtered) {
+  const cumplimientoSemanaActual = computePlaneacionSemana(filtered, getCurrentWeek()).cumplimiento
+  return {
+    totalEmbajadores: overview.length,
+    ventaTotal: sum(overview, (e) => e.venta),
+    botellasTotal: sum(overview, (e) => e.botellas),
+    visitasMantenimiento: sum(overview, (e) => e.visitasMantenimiento),
+    capacitaciones: sum(overview, (e) => e.capacitaciones),
+    activaciones: sum(overview, (e) => e.activaciones),
+    personasImpactadas: sum(overview, (e) => e.personasImpactadas),
+    cumplimientoSemanaActual,
+  }
+}
+
+export function computeEmbajadoresCharts(overview) {
+  const porVenta = overview
+    .filter((e) => e.venta > 0)
+    .slice(0, 8)
+    .map((e) => ({ name: e.embajador, value: e.venta }))
+
+  const actividad = [...overview]
+    .sort(
+      (a, b) =>
+        b.visitasMantenimiento + b.capacitaciones + b.activaciones - (a.visitasMantenimiento + a.capacitaciones + a.activaciones)
+    )
+    .slice(0, 8)
+    .map((e) => ({
+      name: e.embajador,
+      visitas: e.visitasMantenimiento,
+      capacitaciones: e.capacitaciones,
+      activaciones: e.activaciones,
+    }))
+
+  const impacto = [...overview]
+    .sort((a, b) => b.personasImpactadas - a.personasImpactadas)
+    .slice(0, 8)
+    .map((e) => ({ name: e.embajador, value: e.personasImpactadas }))
+
+  return { porVenta, actividad, impacto }
+}
+
+// Detalle mes a mes de UN embajador (para el drill-down al hacer clic en su
+// nombre en el ranking): venta $, botellas (venta + sell out) y actividad
+// de campo, mes por mes.
+export function computeEmbajadorMensual(filtered, embajador, months, limit = 12) {
+  const ultimos = months.slice(-limit)
+  return ultimos.map((mes) => {
+    const ventasMes = filtered.ventasReales.filter((r) => r.embajador === embajador && mesDeFecha(r.fecha) === mes)
+    const sellOutMes = filtered.sellOut.filter((r) => r.embajador === embajador && mesDeFecha(r.fecha) === mes)
+    const actividadesMes = [...filtered.actividadesOn, ...filtered.actividadesOff].filter(
+      (a) => a.embajador === embajador && mesDeFecha(a.fecha) === mes
+    )
+
+    return {
+      mes,
+      name: formatMonthLabel(mes),
+      venta: sum(ventasMes, (r) => r.monto),
+      botellas: sum(ventasMes, (r) => r.cantidad) + sum(sellOutMes, (r) => r.cantidad),
+      visitasMantenimiento: actividadesMes.filter((a) => a.tipoActividad === 'VISITA DE MANTENIMIENTO').length,
+      capacitaciones: actividadesMes.filter((a) => a.tipoActividad === 'CAPACITACIÓN').length,
+      activaciones: actividadesMes.filter((a) => a.tipoActividad === 'ACTIVACIÓN').length,
+      mejoraAnaquel: actividadesMes.filter((a) => a.tipoActividad === 'MEJORA DE ANAQUEL').length,
+      exhibicion: actividadesMes.filter((a) => a.tipoActividad === 'EXHIBICIÓN ADICIONAL').length,
+    }
+  })
 }

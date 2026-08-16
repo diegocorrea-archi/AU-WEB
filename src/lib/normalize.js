@@ -22,6 +22,27 @@ const num = (v) => {
 
 const str = (v) => (v === null || v === undefined ? '' : String(v).trim())
 
+function serialToISO(serial) {
+  const ms = Date.UTC(1899, 11, 30) + serial * 86400000
+  const d = new Date(ms)
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(
+    2,
+    '0'
+  )}`
+}
+
+// Algunas celdas de "Marca temporal"/"Timestamp" traen literalmente el
+// texto "Date(2025,3,10,17,15,17)" en vez de una fecha real (probablemente
+// un script/integración que guardó el resultado de `new Date(...)` como
+// texto). El mes ahí viene 0-indexado, igual que en JS.
+function parseDateLiteral(v) {
+  const m = v.match(/^Date\((\d+),\s*(\d+),\s*(\d+)(?:,\s*(\d+),\s*(\d+),\s*(\d+))?\)$/)
+  if (!m) return null
+  const [, y, mo0, d] = m
+  const mo = Number(mo0) + 1
+  return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+}
+
 // Google Sheets exporta fechas como texto DD/MM/YYYY (p.ej. "27/01/2023")
 // al leerlas vía CSV. La muestra local (Excel -> JSON) ya viene en ISO
 // (YYYY-MM-DD). Algunas columnas sin formato de fecha explícito exportan el
@@ -34,26 +55,58 @@ export function toISODate(raw) {
 
   if (/^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10)
 
+  const literal = parseDateLiteral(v)
+  if (literal) return literal
+
   const dmy = v.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/)
   if (dmy) {
     const [, d, mo, y] = dmy
     return `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`
   }
 
-  // Número de serie de Google Sheets (días desde 1899-12-30). Rango
-  // razonable ~1970-2060 para no confundir con cantidades/precios.
   if (/^\d+(\.\d+)?$/.test(v)) {
     const serial = parseFloat(v)
-    if (serial > 25000 && serial < 60000) {
-      const ms = Date.UTC(1899, 11, 30) + serial * 86400000
-      const d = new Date(ms)
-      return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(
-        d.getUTCDate()
-      ).padStart(2, '0')}`
-    }
+    if (serial > 25000 && serial < 60000) return serialToISO(serial)
   }
 
   return null
+}
+
+// El "Timestamp" auto-generado por Google Forms (columna A de PLANEACION)
+// viene en MES/DÍA/AÑO (locale en-US), a diferencia de las demás columnas
+// de fecha de este proyecto que vienen en DÍA/MES/AÑO. Este parser es
+// específico para ese caso.
+export function toISODateUS(raw) {
+  const v = str(raw)
+  if (!v) return null
+
+  if (/^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10)
+
+  const literal = parseDateLiteral(v)
+  if (literal) return literal
+
+  const mdy = v.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/)
+  if (mdy) {
+    const [, mo, d, y] = mdy
+    return `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`
+  }
+
+  if (/^\d+(\.\d+)?$/.test(v)) {
+    const serial = parseFloat(v)
+    if (serial > 25000 && serial < 60000) return serialToISO(serial)
+  }
+
+  return null
+}
+
+// Lunes de la semana ISO que contiene la fecha dada (YYYY-MM-DD -> YYYY-MM-DD).
+export function mondayOf(iso) {
+  if (!iso) return null
+  const d = new Date(`${iso}T00:00:00Z`)
+  const day = d.getUTCDay() // 0=domingo … 6=sábado
+  const diff = day === 0 ? -6 : 1 - day
+  d.setUTCDate(d.getUTCDate() + diff)
+  return d.toISOString().slice(0, 10)
 }
 
 // Normaliza nombre de marca a 'Unión' | 'Primo' | 'Otro'
@@ -84,7 +137,7 @@ export function normalizeVentas(rows) {
       plaza: str(r['Plaza']),
       ciudad: str(r['Ciudad']),
       embajador: str(r['Mezcalero']),
-      cliente: str(r['Cliente']),
+      cliente: str(r['Cliente']).toUpperCase(),
       producto: str(r['Producto']),
       brand: normalizeBrand(r['Brand']),
       canal: str(r['Canal (MKT SOLO PARA FREEGOODS)']),
@@ -125,7 +178,7 @@ export function normalizeSellOut(rows) {
       ciudad: str(r['Ciudad']),
       embajador: str(r['Embajador']),
       distribuidor: str(r['Distribuidor']),
-      cliente: str(r['Nombre Comercial'] || r['Nombre']),
+      cliente: str(r['Nombre Comercial'] || r['Nombre']).toUpperCase(),
       producto: str(r['Producto SKU']),
       brand: normalizeBrand(r['Brand']),
       canal: str(r['Distribuidor']),
@@ -136,38 +189,80 @@ export function normalizeSellOut(rows) {
   })
 }
 
+function isNA(v) {
+  const s = str(v).toUpperCase()
+  return !s || s === 'NA' || s === 'N/A'
+}
+
+const VISITA_TIPO_VALIDO = 'VISITA DE MANTENIMIENTO'
+
 export function normalizeActividadesOn(rows) {
-  return rows.map((r) => ({
-    _sheet: 'ACTIVIDADES_ON',
-    fecha: toISODate(r['FECHA']),
-    plaza: str(r['PLAZA']),
-    ciudad: str(r['CIUDAD']),
-    embajador: str(r['EMBAJADOR']),
-    cliente: str(r['CLIENTE']),
-    tipoActividad: str(r['¿QUÉ ACTIVIDAD VAS A REALIZAR?']),
-    personasImpactadas: num(r['PERSONAS IMPACTADAS']),
-    raw: r,
-  }))
+  return rows.map((r) => {
+    const fecha = toISODate(r['FECHA'])
+    const skuUnion = r['SKU MEZCAL UNIÓN']
+    const skuPrimo = r['SKU PRIMO APERITIVO']
+    const tipoActividad = str(r['¿QUÉ ACTIVIDAD VAS A REALIZAR?']).toUpperCase()
+    return {
+      _sheet: 'ACTIVIDADES_ON',
+      fecha,
+      semana: mondayOf(fecha),
+      plaza: str(r['PLAZA']),
+      ciudad: str(r['CIUDAD']),
+      embajador: str(r['EMBAJADOR']),
+      cliente: str(r['CLIENTE']).toUpperCase(),
+      tipoActividad,
+      esVisitaMantenimiento: tipoActividad === VISITA_TIPO_VALIDO,
+      personasImpactadas: num(r['PERSONAS IMPACTADAS']),
+      visitaUnion: tipoActividad === VISITA_TIPO_VALIDO && !isNA(skuUnion),
+      visitaPrimo: tipoActividad === VISITA_TIPO_VALIDO && !isNA(skuPrimo),
+      raw: r,
+    }
+  })
 }
 
 export function normalizeActividadesOff(rows) {
-  return rows.map((r) => ({
-    _sheet: 'ACTIVIDADES_OFF',
-    fecha: toISODate(r['FECHA']),
-    embajador: str(r['EMBAJADOR']),
-    cadena: str(r['NOMBRE CADENA']),
-    sucursal: str(r['NOMBRE SUCURSAL']),
-    tipoActividad: str(r['¿QUÉ ACTIVIDAD VAS A REALIZAR?']),
-    personasImpactadas: num(r['PERSONAS IMPACTADAS']),
-    raw: r,
-  }))
+  const sinFecha = []
+  const normalizadas = rows.map((r) => {
+    const fecha = toISODateUS(r['Marca temporal'])
+    if (!fecha && sinFecha.length < 3) sinFecha.push(r['Marca temporal'])
+    const tipoActividad = str(r['¿QUÉ ACTIVIDAD VAS A REALIZAR?']).toUpperCase()
+    const esVisitaMantenimiento = tipoActividad === VISITA_TIPO_VALIDO
+    return {
+      _sheet: 'ACTIVIDADES_OFF',
+      fecha,
+      semana: mondayOf(fecha),
+      embajador: str(r['EMBAJADOR']),
+      cadena: str(r['NOMBRE CADENA']),
+      cliente: str(r['NOMBRE SUCURSAL']).toUpperCase(),
+      tipoActividad,
+      esVisitaMantenimiento,
+      personasImpactadas: num(r['PERSONAS IMPACTADAS']),
+      visitaUnion: esVisitaMantenimiento && !isNA(r['SKU MEZCAL UNIÓN']),
+      visitaPrimo: esVisitaMantenimiento && !isNA(r['SKU PRIMO APERITIVO']),
+      raw: r,
+    }
+  })
+  const totalSinFecha = normalizadas.filter((r) => !r.fecha).length
+  if (totalSinFecha) {
+    console.warn(
+      `[ACTIVIDADES_OFF] ${totalSinFecha} de ${normalizadas.length} filas no traen una fecha reconocible en "Marca temporal". Ejemplos de valor crudo:`,
+      sinFecha
+    )
+    if (totalSinFecha === normalizadas.length && rows[0]) {
+      console.warn(
+        `[ACTIVIDADES_OFF] TODAS las filas fallan — probablemente el nombre de columna no es exactamente "Marca temporal". Columnas reales recibidas:`,
+        Object.keys(rows[0])
+      )
+    }
+  }
+  return normalizadas
 }
 
 export function normalizeUniversoOn(rows) {
   return rows.map((r) => ({
     _sheet: 'UNIVERSO_ON',
-    cuenta: str(r['NOMBRE DE LA CUENTA']),
-    status: str(r['STATUS']),
+    cuenta: str(r['NOMBRE DE LA CUENTA']).toUpperCase(),
+    status: str(r['STATUS']).toUpperCase(),
     operador: str(r['OPERADOR']),
     plaza: str(r['PLAZA']),
     ciudad: str(r['CIUDAD']),
@@ -183,8 +278,8 @@ export function normalizeUniversoOn(rows) {
 export function normalizeUniversoOff(rows) {
   return rows.map((r) => ({
     _sheet: 'UNIVERSO_OFF',
-    cuenta: str(r['Nombre de cuenta']),
-    status: str(r['STATUS']),
+    cuenta: str(r['Nombre de cuenta']).toUpperCase(),
+    status: str(r['STATUS']).toUpperCase(),
     cadena: str(r['CADENA']),
     canal: str(r['CANAL']),
     operador: str(r['Operador']),
@@ -195,6 +290,25 @@ export function normalizeUniversoOff(rows) {
     score: num(r['Score']),
     raw: r,
   }))
+}
+
+// CLIENTES_DIRECTOS se lee por POSICIÓN de columna (B, C, D, E), no por
+// nombre de encabezado, porque no conocemos el texto exacto de sus
+// columnas. `rows` viene de fetchSheetRaw(): array de arrays, primera
+// fila = encabezados.
+export function normalizeClientesDirectos(rawRows) {
+  if (!Array.isArray(rawRows) || rawRows.length < 2) return []
+  const body = rawRows.slice(1)
+  return body
+    .filter((row) => row.some((v) => v !== ''))
+    .map((row) => ({
+      _sheet: 'CLIENTES_DIRECTOS',
+      status: str(row[1]).toUpperCase(), // columna B
+      embajador: str(row[2]), // columna C
+      plaza: str(row[3]), // columna D
+      cliente: str(row[4]).toUpperCase(), // columna E
+    }))
+    .filter((r) => r.cliente)
 }
 
 const DIAS = ['lunes', 'martes', 'miercoles', 'jueves', 'viernes']
@@ -208,16 +322,24 @@ const DIA_KEYS = {
 
 export function normalizePlaneacion(rows) {
   return rows.map((r) => {
+    const fecha = toISODateUS(r['Timestamp'])
     const porDia = {}
     let totalCuentas = 0
     DIAS.forEach((d) => {
       const val = str(r[DIA_KEYS[d]])
-      const cuentas = val ? val.split(',').map((c) => c.trim()).filter(Boolean) : []
+      const cuentas = val
+        ? val
+            .split(',')
+            .map((c) => c.trim().toUpperCase())
+            .filter(Boolean)
+        : []
       porDia[d] = cuentas
       totalCuentas += cuentas.length
     })
     return {
       _sheet: 'PLANEACION',
+      fecha,
+      semana: mondayOf(fecha),
       embajador: str(r['Embajador Respondiendo el Cuestionario']),
       porDia,
       totalCuentasPlaneadas: totalCuentas,

@@ -56,6 +56,8 @@ Ya está conectado por defecto. El flujo es:
    ```
 4. Reinicia `npm run dev` (Vite solo lee `.env` al arrancar).
 
+**Nota sobre `CLIENTES_DIRECTOS`**: esta hoja no viene en el Excel de muestra, así que la página de Clientes solo trae datos de venta directa cuando está conectada al Sheet real. Se lee por posición de columna (C, D, E), no por nombre de encabezado, porque no conocíamos el texto exacto de esas columnas — si el orden de columnas cambia en el Sheet real, hay que ajustar `normalizeClientesDirectos` en `src/lib/normalize.js`.
+
 `src/lib/dataset.js` intenta leer el Sheet real primero
 (`fetchAllSheets()` en `googleSheets.js`, sin API key, vía
 `gviz/tq?tqx=out:csv`). Si algo falla — Sheet no compartido, nombre de hoja

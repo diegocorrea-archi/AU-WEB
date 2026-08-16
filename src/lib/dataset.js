@@ -8,6 +8,7 @@ import {
   normalizeUniversoOn,
   normalizeUniversoOff,
   normalizePlaneacion,
+  normalizeClientesDirectos,
 } from './normalize'
 
 function buildDataset(sheets) {
@@ -19,6 +20,9 @@ function buildDataset(sheets) {
     universoOn: normalizeUniversoOn(sheets.universo_on || []),
     universoOff: normalizeUniversoOff(sheets.universo_off || []),
     planeacion: normalizePlaneacion(sheets.planeacion || []),
+    // CLIENTES_DIRECTOS no existe en el Excel de muestra (sheetData.json),
+    // solo en el Google Sheet real — por eso el fallback es [].
+    clientesDirectos: normalizeClientesDirectos(sheets.clientes_directos || []),
   }
 }
 
