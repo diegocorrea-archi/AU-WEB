@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 
 const ITEMS = [
@@ -5,14 +6,22 @@ const ITEMS = [
   { to: '/ventas', label: 'Ventas', icon: '▲' },
   { to: '/sell-out', label: 'Sell Out', icon: '▽' },
   { to: '/activaciones', label: 'Activaciones', icon: '●' },
+  { to: '/universo', label: 'Universo', icon: '▦' },
   { to: '/clientes', label: 'Clientes', icon: '□' },
   { to: '/planeacion', label: 'Planeación', icon: '▥' },
   { to: '/embajadores', label: 'Embajadores', icon: '☆' },
 ]
 
 export default function Sidebar() {
+  const [open, setOpen] = useState(false)
   return (
-    <aside className="fixed left-0 top-0 h-screen w-60 bg-sidebar text-sidebartext flex flex-col shrink-0">
+    <>
+    <button type="button" aria-label={open ? 'Cerrar menú' : 'Abrir menú'} aria-expanded={open}
+      className="md:hidden fixed top-3 left-3 z-50 bg-sidebar text-white px-3 py-2 rounded-md shadow-lg"
+      onClick={() => setOpen((v) => !v)}>{open ? '✕' : '☰'} Menú</button>
+    {open && <button type="button" aria-label="Cerrar navegación" className="md:hidden fixed inset-0 bg-black/50 z-30" onClick={() => setOpen(false)} />}
+    <aside className={`fixed left-0 top-0 z-40 h-screen w-60 bg-sidebar text-sidebartext flex flex-col shrink-0 transition-transform md:translate-x-0 ${open ? 'translate-x-0' : '-translate-x-full'}`}>
+
       <div className="px-6 py-6 border-b border-white/10">
         <p className="text-[11px] uppercase tracking-[0.18em] text-white/40">Archipiélago Spirits</p>
         <h1 className="section-title text-xl mt-1 leading-tight">
@@ -32,6 +41,7 @@ export default function Sidebar() {
         {ITEMS.map((item) => (
           <NavLink
             key={item.to}
+            onClick={() => setOpen(false)}
             to={item.to}
             end={item.to === '/'}
             className={({ isActive }) =>
@@ -52,5 +62,6 @@ export default function Sidebar() {
         Sin login · vista compartida
       </div>
     </aside>
+    </>
   )
 }

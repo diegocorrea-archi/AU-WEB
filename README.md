@@ -1,3 +1,33 @@
+# Actualización de confiabilidad — noviembre de 2026
+
+## Cambios incorporados
+
+- Cumplimiento ejecutivo por semana/embajador, en lugar de acreditar visitas de semanas distintas.
+- Filtrado de planes semanales por intersección de fecha (lunes a viernes).
+- Tendencias mensuales ordenadas por año y mes en ventas, sell out y ejecutivo.
+- Si falla Google Sheets, se muestran datos vacíos y un error visible; **nunca** se reemplazan por datos de muestra automáticamente.
+- Botones para reintentar conexión o activar la demostración explícitamente. La demostración muestra una advertencia persistente.
+- Hoja opcional `CLIENTES_DIRECTOS` con degradación controlada a lista vacía si no existe.
+- Menú responsivo con apertura/cierre para móvil.
+- Pruebas automatizadas de reglas esenciales mediante `npm test`.
+
+## Operación
+
+Instalar dependencias con `npm ci` (requiere acceso al registro de npm), configurar `VITE_SHEET_ID` en `.env`, ejecutar `npm run dev` para desarrollo o `npm run build` para publicación. Ejecutar `npm test` antes de desplegar.
+
+Si no se configura `VITE_SHEET_ID`, la pantalla comienza sin cifras y permite habilitar la demostración explícitamente. El archivo `src/data/sheetData.json` no debe utilizarse como evidencia de operación actual.
+
+## Alcance y pendientes
+
+- Se conservaron las reglas actuales: ventas reales `VENTA`; sell out `VENTA` y `BONIFICACIONES`.
+- Algunos filtros no son aplicables a todas las hojas porque carecen de esas columnas (por ejemplo, marca/canal en actividades). No se fuerza su aplicación por inferencia.
+- El identificador único de clientes y la homologación entre fuentes requieren reglas de negocio y catálogo maestro; **no** se realizó una fusión heurística que pudiera alterar métricas.
+- El sistema sigue sin backend ni autenticación; no colocar secretos en variables `VITE_` del cliente.
+- `Activaciones` sigue como módulo provisional.
+- Falta validación de la aplicación completa contra el Google Sheet productivo y pruebas de compilación/visualización donde estén disponibles las dependencias.
+
+---
+
 # Dashboard Comercial Spirits — Primo + Unión
 
 Frontend del dashboard interno (Power BI/Tableau-style) para Mezcal Unión y
@@ -137,3 +167,16 @@ Dashboard Ejecutivo automáticamente vía `FilterContext`.
 4. Si más adelante se necesita cachear o proteger el Sheet, mover
    `googleSheets.js` a un endpoint Express — la lógica de parseo ya está
    aislada para eso.
+
+## Pestaña Activaciones — Primo (noviembre 2026)
+
+Ruta: `/#/activaciones`. Lee las hojas `ACTIVIDADES_ON` y `ACTIVIDADES_OFF` del mismo Google Sheet configurado con `VITE_SHEET_ID`; no hace falta crear hojas adicionales.
+
+- Selector de canal ON / OFF y mes (meses disponibles en los registros); KPIs de metas, actividades realizadas, porcentaje, pendientes y actividades adicionales sin meta.
+- Metas **por persona y mes**: ON 80 visitas de mantenimiento, 2 capacitaciones, 1 activación, 1 prospección/catalogación y 1 catalogación de cóctel (85 en total); OFF 20 visitas, 1 capacitación, 4 activaciones, 1 mejora de anaquel y 1 exhibición adicional (27 en total).
+- Clasificación de Primo: `SKU PRIMO APERITIVO` debe tener un valor no vacío/distinto de NA, N/A, NO, etc. Se mantiene el mismo criterio en ambos canales y en todas las categorías. El `tipoActividad` viene de la columna `¿QUÉ ACTIVIDAD VAS A REALIZAR?` (L en ON, I en OFF). Las variantes de mayúsculas, acentos y espacios se normalizan para comparar.
+- Las actividades cuyo tipo no tiene meta aparecen como **adicionales**, sin aumentar el numerador de cumplimiento. Un porcentaje puede superar 100%; los faltantes se suman por categoría, de modo que los excedentes de una categoría no compensan otra.
+- En OFF se utiliza `FECHA` para el mes de la actividad; solo si no es válida se usa `Marca temporal`, que indica cuándo se ingresó el formulario. ON utiliza `FECHA`.
+- **Limitación importante:** solo se conoce a los embajadores con actividad Primo en el mes consultado. Una persona sin actividad no puede añadirse a la meta del equipo sin un padrón de personas activas por canal/mes. Para conseguir una comparación total correcta, habrá que añadir un padrón de activos o asignaciones mensuales. Además, el filtro global de fechas puede reducir las actividades mostradas sin prorratear la meta mensual (se advierte en pantalla). Los filtros globales de marca, producto, canal y concepto no cambian esta vista porque se define exclusivamente como Primo y tiene selector ON/OFF propio.
+- `ACTIVIDADES_OFF` conserva la restricción existente en `applyFilters` de embajadores autorizados (`ROCIO SANCHEZ` y `ALFREDO GONZALEZ`). Si el personal OFF cambia, hay que actualizar esa regla para que sus registros aparezcan.
+- Pruebas: `npm test`. Compilación: `npm run build` tras `npm install`.

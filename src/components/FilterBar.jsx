@@ -33,25 +33,34 @@ function DataSourceBadge({ status }) {
       </span>
     )
   }
-  return (
-    <span className="text-xs text-negative flex items-center gap-1.5" title={status.error || ''}>
-      <span className="h-1.5 w-1.5 rounded-full bg-negative inline-block" />
-      Usando datos de muestra (no se pudo leer el Sheet real)
-    </span>
-  )
+  if (status.source === 'muestra') return <span className="text-xs font-semibold text-negative">MODO DEMOSTRACIÓN · cifras de muestra, NO actuales</span>
+  return <span className="text-xs font-semibold text-negative">Sin conexión a Google Sheets · no se muestran datos</span>
 }
 
 export default function FilterBar() {
-  const { filters, setFilter, resetFilters, options, activeCount, status } = useFilters()
+  const { filters, setFilter, resetFilters, options, activeCount, status, retrySheet, showSample } = useFilters()
 
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
         <DataSourceBadge status={status} />
-        {status.source === 'muestra' && status.error && (
+        {status.source === 'error' && status.error && (
           <span className="text-[11px] text-muted">Detalle: {status.error}</span>
         )}
       </div>
+      {status.source === 'error' && (
+        <div role="alert" className="rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900 flex flex-wrap items-center gap-3">
+          <strong>No hay datos en vivo disponibles.</strong> Revisa el acceso al Sheet o intenta de nuevo.
+          <button type="button" onClick={retrySheet} className="underline font-semibold">Reintentar</button>
+          <button type="button" onClick={showSample} className="underline font-semibold">Ver datos de demostración</button>
+        </div>
+      )}
+      {status.source === 'muestra' && (
+        <div role="status" className="rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900 flex flex-wrap items-center gap-2">
+          Datos de demostración: no utilizar para decisiones comerciales.
+          <button type="button" onClick={retrySheet} className="underline font-semibold">Conectar datos reales</button>
+        </div>
+      )}
       <div className="bg-panel border border-line rounded-md px-4 py-3 flex flex-wrap items-end gap-3">
       <label className="flex flex-col gap-1">
         <span className="text-[10px] uppercase tracking-wide text-muted">Desde</span>

@@ -223,8 +223,8 @@ export function normalizeActividadesOn(rows) {
 export function normalizeActividadesOff(rows) {
   const sinFecha = []
   const normalizadas = rows.map((r) => {
-    const fecha = toISODateUS(r['Marca temporal'])
-    if (!fecha && sinFecha.length < 3) sinFecha.push(r['Marca temporal'])
+    const fecha = toISODate(r['FECHA']) || toISODateUS(r['Marca temporal'])
+    if (!fecha && sinFecha.length < 3) sinFecha.push(r['FECHA'] || r['Marca temporal'])
     const tipoActividad = str(r['¿QUÉ ACTIVIDAD VAS A REALIZAR?']).toUpperCase()
     const esVisitaMantenimiento = tipoActividad === VISITA_TIPO_VALIDO
     return {
@@ -275,19 +275,28 @@ export function normalizeUniversoOn(rows) {
   }))
 }
 
+// Los encabezados de UNIVERSO_OFF pueden cambiar de mayúsculas/acentos
+// entre exportaciones del Sheet; se reconocen por su significado.
+function universoCell(row, ...names) {
+  const canonical = value => str(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim()
+  const wanted = new Set(names.map(canonical))
+  const key = Object.keys(row).find(k => wanted.has(canonical(k)))
+  return key === undefined ? '' : row[key]
+}
+
 export function normalizeUniversoOff(rows) {
   return rows.map((r) => ({
     _sheet: 'UNIVERSO_OFF',
-    cuenta: str(r['Nombre de cuenta']).toUpperCase(),
-    status: str(r['STATUS']).toUpperCase(),
-    cadena: str(r['CADENA']),
-    canal: str(r['CANAL']),
-    operador: str(r['Operador']),
-    plaza: str(r['PLAZA']),
-    ciudad: str(r['CIUDAD']),
-    brand: normalizeBrand(r['MARCA']),
-    ranking: str(r['Ranking']),
-    score: num(r['Score']),
+    cuenta: str(universoCell(r, 'Nombre de cuenta', 'NOMBRE DE LA CUENTA', 'CUENTA', 'NOMBRE CUENTA')).toUpperCase(),
+    status: str(universoCell(r, 'STATUS', 'ESTATUS', 'ESTADO')).toUpperCase(),
+    cadena: str(universoCell(r, 'CADENA')),
+    canal: str(universoCell(r, 'CANAL')),
+    operador: str(universoCell(r, 'Operador', 'EMBAJADOR', 'VENDEDOR', 'RESPONSABLE')),
+    plaza: str(universoCell(r, 'PLAZA')),
+    ciudad: str(universoCell(r, 'CIUDAD')),
+    brand: normalizeBrand(universoCell(r, 'MARCA', 'BRAND')),
+    ranking: str(universoCell(r, 'Ranking')),
+    score: num(universoCell(r, 'Score')),
     raw: r,
   }))
 }

@@ -9,17 +9,31 @@ export function FilterProvider({ children }) {
   const [dataset, setDataset] = useState(emptyDataset)
   const [status, setStatus] = useState({ loading: true, source: null, error: null })
 
+  const [request, setRequest] = useState({ key: 0, useSample: false })
   useEffect(() => {
     let cancelled = false
-    loadDataset().then(({ data, source, error }) => {
-      if (cancelled) return
-      setDataset(data)
-      setStatus({ loading: false, source, error })
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+    loadDataset({ useSample: request.useSample })
+      .then(({ data, source, error }) => {
+        if (cancelled) return
+        setDataset(data)
+        setStatus({ loading: false, source, error })
+      })
+      .catch((error) => {
+        if (cancelled) return
+        setDataset(emptyDataset)
+        setStatus({ loading: false, source: 'error', error: error.message })
+      })
+    return () => { cancelled = true }
+  }, [request])
+
+  const retrySheet = () => {
+    setStatus({ loading: true, source: null, error: null })
+    setRequest((r) => ({ key: r.key + 1, useSample: false }))
+  }
+  const showSample = () => {
+    setStatus({ loading: true, source: null, error: null })
+    setRequest((r) => ({ key: r.key + 1, useSample: true }))
+  }
 
   const options = useMemo(() => getFilterOptions(dataset), [dataset])
   const filtered = useMemo(() => applyFilters(dataset, filters), [dataset, filters])
@@ -31,7 +45,7 @@ export function FilterProvider({ children }) {
 
   return (
     <FilterContext.Provider
-      value={{ filters, setFilter, resetFilters, options, filtered, activeCount, status }}
+      value={{ filters, setFilter, resetFilters, options, filtered, dataset, activeCount, status, retrySheet, showSample }}
     >
       {children}
     </FilterContext.Provider>

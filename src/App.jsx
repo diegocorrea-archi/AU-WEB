@@ -7,7 +7,8 @@ import SellOut from './pages/SellOut'
 import Planeacion from './pages/Planeacion'
 import Clientes from './pages/Clientes'
 import Embajadores from './pages/Embajadores'
-import ComingSoon from './pages/ComingSoon'
+import Activaciones from './pages/Activaciones'
+import Universo from './pages/Universo'
 import { FilterProvider } from './context/FilterContext'
 
 export default function App() {
@@ -16,14 +17,15 @@ export default function App() {
       <HashRouter>
         <div className="min-h-screen">
           <Sidebar />
-          <main className="pl-60">
-            <div className="max-w-[1400px] mx-auto px-6 py-6 space-y-5">
+          <main className="md:pl-60">
+            <div className="max-w-[1400px] mx-auto px-3 md:px-6 pt-16 md:pt-6 pb-6 space-y-5">
               <FilterBar />
               <Routes>
                 <Route path="/" element={<DashboardEjecutivo />} />
                 <Route path="/ventas" element={<Ventas />} />
                 <Route path="/sell-out" element={<SellOut />} />
-                <Route path="/activaciones" element={<ComingSoon title="Activaciones" />} />
+                <Route path="/activaciones" element={<Activaciones />} />
+                <Route path="/universo" element={<Universo />} />
                 <Route path="/clientes" element={<Clientes />} />
                 <Route path="/planeacion" element={<Planeacion />} />
                 <Route path="/embajadores" element={<Embajadores />} />

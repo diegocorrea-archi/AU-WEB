@@ -2,7 +2,7 @@
 // Todas las funciones de este módulo reciben el `dataset` normalizado como
 // parámetro (en vez de importarlo fijo) para poder alimentarlo desde el
 // Google Sheet real o desde la muestra local, sin duplicar lógica.
-import { mondayOf } from './normalize'
+import { mondayOf } from './normalize.js'
 
 function uniqueSorted(values) {
   return [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b))
@@ -74,6 +74,12 @@ export const emptyDataset = {
   clientesDirectos: [],
 }
 
+function weekEnd(week) {
+  const date = new Date(`${week}T00:00:00Z`)
+  date.setUTCDate(date.getUTCDate() + 4)
+  return date.toISOString().slice(0, 10)
+}
+
 export function applyFilters(dataset, filters) {
   const ventas = dataset.ventas.filter((r) => matches(r, filters))
   // "Venta real" (la que cuenta para $, botellas, ticket, etc.) es SOLO
@@ -131,7 +137,12 @@ export function applyFilters(dataset, filters) {
         (!filters.brand || r.brand === filters.brand) &&
         (!filters.embajador || r.operador === filters.embajador)
     ),
-    planeacion: dataset.planeacion.filter((r) => !filters.embajador || r.embajador === filters.embajador),
+    planeacion: dataset.planeacion.filter((r) =>
+      (!filters.embajador || r.embajador === filters.embajador) &&
+      // Un plan semanal aplica si al menos un día lunes-viernes coincide con el rango.
+      (!filters.fechaInicio || (r.semana && weekEnd(r.semana) >= filters.fechaInicio)) &&
+      (!filters.fechaFin || (r.semana && r.semana <= filters.fechaFin))
+    ),
     clientesDirectos: dataset.clientesDirectos.filter(
       (r) =>
         r.status === 'ACTIVO' &&
@@ -174,29 +185,12 @@ export function computeExecutiveKpis(filtered) {
     sum(filtered.actividadesOn, (r) => r.personasImpactadas) +
     sum(filtered.actividadesOff, (r) => r.personasImpactadas)
 
-  // Cumplimiento de planeación: cuentas planeadas por embajador que
-  // efectivamente registran una actividad ON con ese mismo cliente.
-  const clientesVisitadosPorEmbajador = new Map()
-  ;[...filtered.actividadesOn, ...filtered.actividadesOff]
-    .filter((a) => a.esVisitaMantenimiento)
-    .forEach((a) => {
-      if (!a.embajador) return
-      if (!clientesVisitadosPorEmbajador.has(a.embajador)) {
-        clientesVisitadosPorEmbajador.set(a.embajador, new Set())
-      }
-      if (a.cliente) clientesVisitadosPorEmbajador.get(a.embajador).add(a.cliente.toUpperCase())
-    })
-  let planeadas = 0
-  let ejecutadas = 0
-  filtered.planeacion.forEach((p) => {
-    const visitadas = clientesVisitadosPorEmbajador.get(p.embajador) || new Set()
-    Object.values(p.porDia).forEach((cuentas) => {
-      cuentas.forEach((c) => {
-        planeadas += 1
-        if (visitadas.has(c.toUpperCase())) ejecutadas += 1
-      })
-    })
-  })
+  // El cumplimiento se calcula por semana y embajador. Una visita de
+  // otra semana no puede satisfacer una cuenta planeada de esta semana.
+  const semanasPlaneadas = [...new Set(filtered.planeacion.map((p) => p.semana).filter(Boolean))]
+  const resumenSemanal = semanasPlaneadas.map((semana) => computePlaneacionSemana(filtered, semana))
+  const planeadas = sum(resumenSemanal, (r) => r.totalPlaneadas)
+  const ejecutadas = sum(resumenSemanal, (r) => r.totalVisitadas)
   const cumplimientoPlaneacion = planeadas ? ejecutadas / planeadas : 0
 
   // Universo / nuevos / perdidos (a partir de UNIVERSO_ON + UNIVERSO_OFF)
@@ -226,6 +220,15 @@ const MES_NOMBRE = [
   '', 'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic',
 ]
 
+function sortMonthly(series) {
+  const monthIndex = Object.fromEntries(MES_NOMBRE.map((mes, i) => [mes, i]))
+  return series.sort((a, b) => {
+    const [ma, ya] = a.name.split(' ')
+    const [mb, yb] = b.name.split(' ')
+    return Number(ya) - Number(yb) || monthIndex[ma] - monthIndex[mb]
+  })
+}
+
 function groupSum(arr, keyFn, valueFn) {
   const map = new Map()
   arr.forEach((r) => {
@@ -239,11 +242,11 @@ function groupSum(arr, keyFn, valueFn) {
 export function computeExecutiveCharts(filtered) {
   const ventasReales = filtered.ventasReales
 
-  const ventaMensual = groupSum(
+  const ventaMensual = sortMonthly(groupSum(
     ventasReales,
     (r) => (r.anio && r.mes ? `${MES_NOMBRE[r.mes]} ${r.anio}` : null),
     (r) => r.monto
-  )
+  ))
 
   const ventaPorPlaza = groupSum(ventasReales, (r) => r.plaza, (r) => r.monto).sort((a, b) => b.value - a.value)
   const ventaPorCiudad = groupSum(ventasReales, (r) => r.ciudad, (r) => r.monto).sort((a, b) => b.value - a.value)
@@ -298,16 +301,16 @@ export function computeVentasKpis(filtered) {
 export function computeVentasCharts(filtered) {
   const ventasReales = filtered.ventasReales
 
-  const tendenciaMensual = groupSum(
+  const tendenciaMensual = sortMonthly(groupSum(
     ventasReales,
     (r) => (r.anio && r.mes ? `${MES_NOMBRE[r.mes]} ${r.anio}` : null),
     (r) => r.monto
-  )
-  const botellasMensual = groupSum(
+  ))
+  const botellasMensual = sortMonthly(groupSum(
     ventasReales,
     (r) => (r.anio && r.mes ? `${MES_NOMBRE[r.mes]} ${r.anio}` : null),
     (r) => r.cantidad
-  )
+  ))
 
   const ventaPorMarca = groupSum(ventasReales, (r) => r.brand, (r) => r.monto)
   const ventaPorSku = groupSum(ventasReales, (r) => r.producto, (r) => r.monto)
@@ -421,11 +424,11 @@ export function computeSellOutKpis(filtered) {
 export function computeSellOutCharts(filtered) {
   const so = filtered.sellOut
 
-  const tendenciaMensual = groupSum(
+  const tendenciaMensual = sortMonthly(groupSum(
     so,
     (r) => (r.anio && r.mes ? `${MES_NOMBRE[r.mes]} ${r.anio}` : null),
     (r) => r.cantidad
-  )
+  ))
   const porPlaza = groupSum(so, (r) => r.plaza, (r) => r.cantidad).sort((a, b) => b.value - a.value)
   const porMarca = groupSum(so, (r) => r.brand, (r) => r.cantidad)
   const porSku = groupSum(so, (r) => r.producto, (r) => r.cantidad)

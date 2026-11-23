@@ -219,7 +219,10 @@ export async function fetchAllSheets() {
     keys.map((k) => {
       // CLIENTES_DIRECTOS se lee por posición de columna (C, D, E) porque
       // no conocemos el nombre exacto de sus encabezados.
-      if (k === 'clientes_directos') return fetchSheetRaw(SHEETS[k])
+      if (k === 'clientes_directos') return fetchSheetRaw(SHEETS[k]).catch((err) => {
+        console.warn('[googleSheets] CLIENTES_DIRECTOS no disponible; se utilizará una lista vacía.', err.message)
+        return []
+      })
       // PLANEACION y ACTIVIDADES_OFF tienen columnas de timestamp con
       // formato mixto (texto de Forms vs. celda de fecha real).
       if (k === 'planeacion') return fetchSheetWithReliableDate(SHEETS[k], 'Timestamp')
